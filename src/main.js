@@ -8,16 +8,71 @@ if (started) {
 }
 
 const IS_DEV = !app.isPackaged;
-const DEV_REMINDER_INTERVAL_MS = 10 * 1000;
-const PROD_REMINDER_INTERVAL_MS = 20 * 60 * 1000;
-const REMINDER_INTERVAL_MS = IS_DEV ? DEV_REMINDER_INTERVAL_MS : PROD_REMINDER_INTERVAL_MS;
+const DEFAULT_INTERVAL_MS = 20 * 60 * 1000;
+const DEV_DEFAULT_INTERVAL_MS = 10 * 1000;
 const AUTO_START_REMINDERS = false;
 const NOTIFICATION_TITLE = 'Blink reminder';
 const NOTIFICATION_BODY = 'Blink 10 times and look away for 20 seconds.';
+const SETTINGS_FILE_NAME = 'settings.json';
+const INTERVAL_OPTIONS = [
+  { label: '10 sec', value: 10 * 1000, devOnly: true },
+  { label: '20 sec', value: 20 * 1000, devOnly: true },
+  { label: '5 min', value: 5 * 60 * 1000 },
+  { label: '10 min', value: 10 * 60 * 1000 },
+  { label: '20 min', value: 20 * 60 * 1000 },
+];
 
 let tray = null;
 let reminderInterval = null;
 let trayMenu = null;
+let currentIntervalMs = IS_DEV ? DEV_DEFAULT_INTERVAL_MS : DEFAULT_INTERVAL_MS;
+let settingsPath = '';
+
+function getVisibleIntervalOptions() {
+  return INTERVAL_OPTIONS.filter((option) => IS_DEV || !option.devOnly);
+}
+
+function getIntervalLabel(intervalMs) {
+  const matchedOption = INTERVAL_OPTIONS.find((option) => option.value === intervalMs);
+  return matchedOption ? matchedOption.label : `${Math.round(intervalMs / 1000)} sec`;
+}
+
+function getSettingsPath() {
+  return path.join(app.getPath('userData'), SETTINGS_FILE_NAME);
+}
+
+function loadSettings() {
+  try {
+    const raw = fs.readFileSync(settingsPath, 'utf8');
+    const parsed = JSON.parse(raw);
+
+    if (typeof parsed.currentIntervalMs === 'number') {
+      currentIntervalMs = parsed.currentIntervalMs;
+    }
+  } catch (error) {
+    if (error?.code !== 'ENOENT') {
+      console.error('Failed to load settings:', error);
+    }
+  }
+}
+
+function saveSettings() {
+  try {
+    fs.writeFileSync(
+      settingsPath,
+      JSON.stringify(
+        {
+          currentIntervalMs,
+        },
+        null,
+        2,
+      ),
+      'utf8',
+    );
+  } catch (error) {
+    console.error('Failed to save settings:', error);
+  }
+}
 
 function showBlinkNotification() {
   new Notification({
@@ -36,11 +91,42 @@ function updateTrayVisualState() {
   }
 
   const isRunning = isReminderRunning();
-  tray.setToolTip(`Blink Reminder: ${isRunning ? 'running' : 'paused'}`);
+  tray.setToolTip(`Blink Reminder: ${isRunning ? 'running' : 'paused'} (${getIntervalLabel(currentIntervalMs)})`);
 
   if (process.platform === 'darwin') {
     tray.setTitle(isRunning ? '👁 On' : '👁');
   }
+}
+
+function restartRemindersIfRunning() {
+  if (!isReminderRunning()) {
+    updateTrayVisualState();
+    rebuildTrayMenu();
+    return;
+  }
+
+  clearInterval(reminderInterval);
+  reminderInterval = setInterval(() => {
+    showBlinkNotification();
+  }, currentIntervalMs);
+
+  updateTrayVisualState();
+  rebuildTrayMenu();
+}
+
+function setIntervalMs(nextIntervalMs) {
+  currentIntervalMs = nextIntervalMs;
+  saveSettings();
+  restartRemindersIfRunning();
+}
+
+function buildIntervalMenuItems() {
+  return getVisibleIntervalOptions().map((option) => ({
+    label: option.label,
+    type: 'radio',
+    checked: currentIntervalMs === option.value,
+    click: () => setIntervalMs(option.value),
+  }));
 }
 
 function rebuildTrayMenu() {
@@ -51,6 +137,10 @@ function rebuildTrayMenu() {
   trayMenu = Menu.buildFromTemplate([
     {
       label: isReminderRunning() ? 'Reminders running' : 'Reminders paused',
+      enabled: false,
+    },
+    {
+      label: `Current interval: ${getIntervalLabel(currentIntervalMs)}`,
       enabled: false,
     },
     {
@@ -70,12 +160,15 @@ function rebuildTrayMenu() {
       type: 'separator',
     },
     {
-      label: 'Show test notification',
-      click: () => showBlinkNotification(),
+      label: 'Set interval',
+      submenu: buildIntervalMenuItems(),
     },
     {
-      label: `Current interval: ${Math.round(REMINDER_INTERVAL_MS / 1000)} sec`,
-      enabled: false,
+      type: 'separator',
+    },
+    {
+      label: 'Show test notification',
+      click: () => showBlinkNotification(),
     },
     {
       type: 'separator',
@@ -99,7 +192,7 @@ function startReminders() {
 
   reminderInterval = setInterval(() => {
     showBlinkNotification();
-  }, REMINDER_INTERVAL_MS);
+  }, currentIntervalMs);
 
   updateTrayVisualState();
   rebuildTrayMenu();
@@ -137,12 +230,14 @@ function createTray() {
 }
 
 app.whenReady().then(() => {
+  settingsPath = getSettingsPath();
+  loadSettings();
+
   if (process.platform === 'darwin') {
     app.dock.hide();
   }
 
   createTray();
-  showBlinkNotification();
 
   if (AUTO_START_REMINDERS) {
     startReminders();
