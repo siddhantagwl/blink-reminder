@@ -11,6 +11,7 @@ const IS_DEV = !app.isPackaged;
 const DEFAULT_INTERVAL_MS = 20 * 60 * 1000;
 const DEV_DEFAULT_INTERVAL_MS = 10 * 1000;
 const AUTO_START_REMINDERS = false;
+const DEFAULT_LAUNCH_AT_LOGIN = false;
 const NOTIFICATION_TITLE = 'Blink reminder';
 const NOTIFICATION_BODY = 'Blink 10 times and look away for 20 seconds.';
 const SETTINGS_FILE_NAME = 'settings.json';
@@ -26,6 +27,7 @@ let tray = null;
 let reminderInterval = null;
 let trayMenu = null;
 let currentIntervalMs = IS_DEV ? DEV_DEFAULT_INTERVAL_MS : DEFAULT_INTERVAL_MS;
+let launchAtLogin = DEFAULT_LAUNCH_AT_LOGIN;
 let settingsPath = '';
 let usingFallbackTrayIcon = false;
 
@@ -65,6 +67,10 @@ function loadSettings() {
     if (typeof parsed.currentIntervalMs === 'number') {
       currentIntervalMs = parsed.currentIntervalMs;
     }
+
+    if (typeof parsed.launchAtLogin === 'boolean') {
+      launchAtLogin = parsed.launchAtLogin;
+    }
   } catch (error) {
     if (error?.code !== 'ENOENT') {
       console.error('Failed to load settings:', error);
@@ -79,6 +85,7 @@ function saveSettings() {
       JSON.stringify(
         {
           currentIntervalMs,
+          launchAtLogin,
         },
         null,
         2,
@@ -87,6 +94,24 @@ function saveSettings() {
     );
   } catch (error) {
     console.error('Failed to save settings:', error);
+  }
+}
+
+function applyLaunchAtLoginSetting() {
+  if (process.platform !== 'darwin') {
+    return;
+  }
+
+  if (!app.isPackaged) {
+    return;
+  }
+
+  try {
+    app.setLoginItemSettings({
+      openAtLogin: launchAtLogin,
+    });
+  } catch (error) {
+    console.error('Failed to apply launch at login setting:', error);
   }
 }
 
@@ -134,6 +159,13 @@ function setIntervalMs(nextIntervalMs) {
   currentIntervalMs = nextIntervalMs;
   saveSettings();
   restartRemindersIfRunning();
+}
+
+function setLaunchAtLogin(nextValue) {
+  launchAtLogin = nextValue;
+  saveSettings();
+  applyLaunchAtLoginSetting();
+  rebuildTrayMenu();
 }
 
 function buildIntervalMenuItems() {
@@ -185,6 +217,16 @@ function rebuildTrayMenu() {
     {
       label: 'Show test notification',
       click: () => showBlinkNotification(),
+    },
+    {
+      type: 'separator',
+    },
+    {
+      label: app.isPackaged ? 'Launch at login' : 'Launch at login (available after packaging)',
+      type: 'checkbox',
+      checked: launchAtLogin,
+      enabled: app.isPackaged,
+      click: (menuItem) => setLaunchAtLogin(menuItem.checked),
     },
     {
       type: 'separator',
@@ -254,6 +296,7 @@ function createTray() {
 app.whenReady().then(() => {
   settingsPath = getSettingsPath();
   loadSettings();
+  applyLaunchAtLoginSetting();
 
   if (process.platform === 'darwin') {
     app.dock.hide();
