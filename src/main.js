@@ -27,6 +27,22 @@ let reminderInterval = null;
 let trayMenu = null;
 let currentIntervalMs = IS_DEV ? DEV_DEFAULT_INTERVAL_MS : DEFAULT_INTERVAL_MS;
 let settingsPath = '';
+let usingFallbackTrayIcon = false;
+
+function createFallbackTrayIcon() {
+  const svg = `
+    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 18 18">
+      <g fill="none" stroke="black" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M2 9c1.8-2.8 4.3-4.2 7-4.2s5.2 1.4 7 4.2c-1.8 2.8-4.3 4.2-7 4.2S3.8 11.8 2 9Z"/>
+        <circle cx="9" cy="9" r="2.1" fill="black" stroke="none"/>
+      </g>
+    </svg>
+  `.trim();
+
+  const icon = nativeImage.createFromDataURL(`data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`);
+  icon.setTemplateImage(true);
+  return icon.resize({ width: 18, height: 18 });
+}
 
 function getVisibleIntervalOptions() {
   return INTERVAL_OPTIONS.filter((option) => IS_DEV || !option.devOnly);
@@ -94,7 +110,7 @@ function updateTrayVisualState() {
   tray.setToolTip(`Blink Reminder: ${isRunning ? 'running' : 'paused'} (${getIntervalLabel(currentIntervalMs)})`);
 
   if (process.platform === 'darwin') {
-    tray.setTitle(isRunning ? '👁 On' : '👁');
+    tray.setTitle(usingFallbackTrayIcon ? (isRunning ? '👁 On' : '👁') : '');
   }
 }
 
@@ -212,9 +228,15 @@ function stopReminders() {
 function createTray() {
   const iconPath = path.join(__dirname, 'iconTemplate.png');
   const hasIconFile = fs.existsSync(iconPath);
-  const trayIcon = hasIconFile ? nativeImage.createFromPath(iconPath) : nativeImage.createEmpty();
+  usingFallbackTrayIcon = !hasIconFile;
+  const trayIcon = hasIconFile ? nativeImage.createFromPath(iconPath) : createFallbackTrayIcon();
+
+  if (process.platform === 'darwin') {
+    trayIcon.setTemplateImage(true);
+  }
 
   tray = new Tray(trayIcon);
+  tray.setIgnoreDoubleClickEvents(true);
   updateTrayVisualState();
   rebuildTrayMenu();
 
