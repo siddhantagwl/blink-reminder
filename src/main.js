@@ -1,56 +1,160 @@
-import { app, BrowserWindow } from 'electron';
+import { app, Menu, Notification, Tray, nativeImage } from 'electron';
 import path from 'node:path';
+import fs from 'node:fs';
 import started from 'electron-squirrel-startup';
 
-// Handle creating/removing shortcuts on Windows when installing/uninstalling.
 if (started) {
   app.quit();
 }
 
-const createWindow = () => {
-  // Create the browser window.
-  const mainWindow = new BrowserWindow({
-    width: 800,
-    height: 600,
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
-    },
-  });
+const IS_DEV = !app.isPackaged;
+const DEV_REMINDER_INTERVAL_MS = 10 * 1000;
+const PROD_REMINDER_INTERVAL_MS = 20 * 60 * 1000;
+const REMINDER_INTERVAL_MS = IS_DEV ? DEV_REMINDER_INTERVAL_MS : PROD_REMINDER_INTERVAL_MS;
+const AUTO_START_REMINDERS = false;
+const NOTIFICATION_TITLE = 'Blink reminder';
+const NOTIFICATION_BODY = 'Blink 10 times and look away for 20 seconds.';
 
-  // and load the index.html of the app.
-  if (MAIN_WINDOW_VITE_DEV_SERVER_URL) {
-    mainWindow.loadURL(MAIN_WINDOW_VITE_DEV_SERVER_URL);
-  } else {
-    mainWindow.loadFile(path.join(__dirname, `../renderer/${MAIN_WINDOW_VITE_NAME}/index.html`));
+let tray = null;
+let reminderInterval = null;
+let trayMenu = null;
+
+function showBlinkNotification() {
+  new Notification({
+    title: NOTIFICATION_TITLE,
+    body: NOTIFICATION_BODY,
+  }).show();
+}
+
+function isReminderRunning() {
+  return reminderInterval !== null;
+}
+
+function updateTrayVisualState() {
+  if (!tray) {
+    return;
   }
 
-  // Open the DevTools.
-  mainWindow.webContents.openDevTools();
-};
+  const isRunning = isReminderRunning();
+  tray.setToolTip(`Blink Reminder: ${isRunning ? 'running' : 'paused'}`);
 
-// This method will be called when Electron has finished
-// initialization and is ready to create browser windows.
-// Some APIs can only be used after this event occurs.
+  if (process.platform === 'darwin') {
+    tray.setTitle(isRunning ? '👁 On' : '👁');
+  }
+}
+
+function rebuildTrayMenu() {
+  if (!tray) {
+    return;
+  }
+
+  trayMenu = Menu.buildFromTemplate([
+    {
+      label: isReminderRunning() ? 'Reminders running' : 'Reminders paused',
+      enabled: false,
+    },
+    {
+      type: 'separator',
+    },
+    {
+      label: 'Start reminders',
+      enabled: !isReminderRunning(),
+      click: () => startReminders(),
+    },
+    {
+      label: 'Stop reminders',
+      enabled: isReminderRunning(),
+      click: () => stopReminders(),
+    },
+    {
+      type: 'separator',
+    },
+    {
+      label: 'Show test notification',
+      click: () => showBlinkNotification(),
+    },
+    {
+      label: `Current interval: ${Math.round(REMINDER_INTERVAL_MS / 1000)} sec`,
+      enabled: false,
+    },
+    {
+      type: 'separator',
+    },
+    {
+      label: 'Quit',
+      click: () => {
+        stopReminders();
+        app.quit();
+      },
+    },
+  ]);
+
+  tray.setContextMenu(trayMenu);
+}
+
+function startReminders() {
+  if (isReminderRunning()) {
+    return;
+  }
+
+  reminderInterval = setInterval(() => {
+    showBlinkNotification();
+  }, REMINDER_INTERVAL_MS);
+
+  updateTrayVisualState();
+  rebuildTrayMenu();
+}
+
+function stopReminders() {
+  if (!isReminderRunning()) {
+    return;
+  }
+
+  clearInterval(reminderInterval);
+  reminderInterval = null;
+  updateTrayVisualState();
+  rebuildTrayMenu();
+}
+
+function createTray() {
+  const iconPath = path.join(__dirname, 'iconTemplate.png');
+  const hasIconFile = fs.existsSync(iconPath);
+  const trayIcon = hasIconFile ? nativeImage.createFromPath(iconPath) : nativeImage.createEmpty();
+
+  tray = new Tray(trayIcon);
+  updateTrayVisualState();
+  rebuildTrayMenu();
+
+  if (process.platform === 'darwin') {
+    tray.on('click', () => {
+      tray?.popUpContextMenu(trayMenu ?? undefined);
+    });
+  }
+
+  tray.on('right-click', () => {
+    tray?.popUpContextMenu(trayMenu ?? undefined);
+  });
+}
+
 app.whenReady().then(() => {
-  createWindow();
+  if (process.platform === 'darwin') {
+    app.dock.hide();
+  }
 
-  // On OS X it's common to re-create a window in the app when the
-  // dock icon is clicked and there are no other windows open.
+  createTray();
+  showBlinkNotification();
+
+  if (AUTO_START_REMINDERS) {
+    startReminders();
+  }
+
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
-      createWindow();
+    if (!tray) {
+      createTray();
     }
   });
 });
 
-// Quit when all windows are closed, except on macOS. There, it's common
-// for applications and their menu bar to stay active until the user quits
-// explicitly with Cmd + Q.
-app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') {
-    app.quit();
-  }
+app.on('window-all-closed', (event) => {
+  event.preventDefault();
 });
-
-// In this file you can include the rest of your app's specific main process
-// code. You can also put them in separate files and import them here.
