@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Menu, Tray, globalShortcut, nativeImage } from 'electron';
+import { app, BrowserWindow, Menu, Tray, globalShortcut, nativeImage, screen } from 'electron';
 import path from 'node:path';
 import fs from 'node:fs';
 import { execFile } from 'node:child_process';
@@ -42,9 +42,14 @@ const SHORTCUT_INSTANT = 'CommandOrControl+Option+Shift+B';
 const SETTINGS_FILE_NAME = 'settings.json';
 const BREAK_WINDOW_WIDTH = 340;
 const BREAK_WINDOW_HEIGHT = 290;
+const DIM_OPACITY = 0.55;
+const DIM_FADE_MS = 280;
 const INTERVAL_OPTIONS = [
   { label: '10 sec', value: 10 * 1000, devOnly: true },
   { label: '20 sec', value: 20 * 1000, devOnly: true },
+  { label: '5 min', value: 5 * 60 * 1000 },
+  { label: '10 min', value: 10 * 60 * 1000 },
+  { label: '20 min', value: 20 * 60 * 1000 },
 ];
 const BREAK_DURATION_OPTIONS = [
   { label: '20 sec', value: 20 },
@@ -62,6 +67,7 @@ let iconRunning = null;
 let iconPaused = null;
 let lastNotificationBodyIndex = -1;
 let breakWindow = null;
+let dimOverlays = [];
 
 function loadTrayIcons() {
   const running = nativeImage.createFromPath(path.join(__dirname, 'iconTemplate.png'));
@@ -141,10 +147,6 @@ function buildBreakHtml(bodyText, durationSeconds) {
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', sans-serif; }
-  @keyframes breakIn {
-    from { opacity: 0; transform: scale(0.94) translateY(6px); }
-    to   { opacity: 1; transform: scale(1) translateY(0); }
-  }
   @keyframes pulse {
     0%   { transform: scale(1);    opacity: 1; }
     40%  { transform: scale(1.09); opacity: 0.85; }
@@ -157,12 +159,15 @@ function buildBreakHtml(bodyText, durationSeconds) {
     overflow: hidden;
     -webkit-user-select: none;
     -webkit-app-region: drag;
-    opacity: 0;
-    transform-origin: center;
-    animation: breakIn 280ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
-    transition: opacity 220ms ease, transform 220ms ease;
+    transform: scaleY(0);
+    transform-origin: center center;
+    transition: transform 520ms cubic-bezier(0.16, 1, 0.3, 1);
   }
-  body.leaving { opacity: 0; transform: scale(0.97); }
+  body.entered { transform: scaleY(1); }
+  body.leaving {
+    transform: scaleY(0);
+    transition: transform 400ms cubic-bezier(0.76, 0, 0.84, 0);
+  }
   .wrap {
     height: 100%;
     display: flex; flex-direction: column;
@@ -237,11 +242,16 @@ function buildBreakHtml(bodyText, durationSeconds) {
     <div class="count" id="count">${durationSeconds}</div>
   </div>
   <script>
-    const CLOSE_DELAY = 220;
+    const CLOSE_DELAY = 420;
     let seconds = ${durationSeconds};
     const el = document.getElementById('count');
 
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      document.body.classList.add('entered');
+    }));
+
     function closeWithFade() {
+      document.body.classList.remove('entered');
       document.body.classList.add('leaving');
       setTimeout(() => window.close(), CLOSE_DELAY);
     }
@@ -264,9 +274,71 @@ function buildBreakHtml(bodyText, durationSeconds) {
 </html>`;
 }
 
+function buildDimHtml() {
+  return `<!doctype html><html><head><meta charset="utf-8"><style>
+    html, body { margin: 0; height: 100%; overflow: hidden; background: transparent; -webkit-user-select: none; }
+    body {
+      background: rgba(0, 0, 0, ${DIM_OPACITY});
+      opacity: 0;
+      animation: dimIn ${DIM_FADE_MS}ms ease forwards;
+      transition: opacity ${DIM_FADE_MS}ms ease;
+    }
+    @keyframes dimIn { to { opacity: 1; } }
+    body.leaving { opacity: 0; }
+  </style></head><body></body></html>`;
+}
+
+function openDimOverlays() {
+  closeDimOverlays();
+  const displays = screen.getAllDisplays();
+  const html = 'data:text/html;charset=utf-8,' + encodeURIComponent(buildDimHtml());
+
+  dimOverlays = displays.map((display) => {
+    const overlay = new BrowserWindow({
+      x: display.bounds.x,
+      y: display.bounds.y,
+      width: display.bounds.width,
+      height: display.bounds.height,
+      frame: false,
+      transparent: true,
+      alwaysOnTop: true,
+      resizable: false,
+      movable: false,
+      minimizable: false,
+      maximizable: false,
+      focusable: false,
+      skipTaskbar: true,
+      hasShadow: false,
+      show: false,
+      webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
+    });
+    overlay.setIgnoreMouseEvents(true);
+    overlay.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+    overlay.setAlwaysOnTop(true, 'screen-saver');
+    overlay.once('ready-to-show', () => overlay.showInactive());
+    overlay.loadURL(html);
+    return overlay;
+  });
+}
+
+function closeDimOverlays() {
+  const overlays = dimOverlays;
+  dimOverlays = [];
+  for (const overlay of overlays) {
+    if (!overlay || overlay.isDestroyed()) continue;
+    overlay.webContents
+      .executeJavaScript("document.body.classList.add('leaving')")
+      .catch(() => {});
+    setTimeout(() => {
+      if (!overlay.isDestroyed()) overlay.close();
+    }, DIM_FADE_MS);
+  }
+}
+
 function showBreak() {
   if (breakWindow && !breakWindow.isDestroyed()) return;
 
+  openDimOverlays();
   const bodyText = pickNextNotificationBody();
   breakWindow = new BrowserWindow({
     width: BREAK_WINDOW_WIDTH,
@@ -288,10 +360,12 @@ function showBreak() {
 
   breakWindow.once('ready-to-show', () => {
     breakWindow?.showInactive();
+    breakWindow?.moveTop();
   });
 
   breakWindow.on('closed', () => {
     breakWindow = null;
+    closeDimOverlays();
   });
 
   const html = buildBreakHtml(bodyText, currentBreakDurationSeconds);
