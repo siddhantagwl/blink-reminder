@@ -16,20 +16,32 @@ const MAX_INTERVAL_MINUTES = 120;
 const DEFAULT_BREAK_DURATION_SECONDS = 20;
 const AUTO_START_REMINDERS = false;
 const NOTIFICATION_BODIES = [
-  'Blink 10 times and look away for 20 seconds.',
-  'Look at something 20 feet away for 20 seconds.',
-  'Give your eyes a rest — blink and refocus.',
-  'Soft blinks. Let your eyes reset.',
-  'Unlock your jaw, drop your shoulders, and blink.',
-  'Look far, then near. Your eyes need the workout.',
-  'Close your eyes for a moment. Breathe.',
-  'Blink slowly a few times. Notice anything dry?',
+  'Your eyeballs called. They\'re thirsty.',
+  'Stop doomscrolling for 20 seconds.',
+  'Plot twist: your monitor isn\'t your bestie.',
+  'Stare at something that isn\'t glowing.',
+  'That spreadsheet can wait. Look away.',
+  'Eye yoga break. Pose: Anywhere But Here.',
+  'Glance into the distance like you\'re in a music video.',
+  'Window gazing is a respected art form. Go.',
+  'Your future self is begging you to look away.',
+  'Unclench your face. Drop your shoulders. Blink.',
+  'Soft blinks. Hard eye roll. Whatever works.',
+  'Your eyelids deserve a union break.',
+  'Look up. Not figuratively. Literally.',
+  'Give your cornea a vacation.',
+  'Dry eyes? Fake blink five times. Then do real ones.',
+  'The corner of the room hasn\'t seen you in hours.',
+  'Close your eyes. Picture a beach. Back to work.',
+  'Look 20 feet away. Stay there 20 seconds.',
+  'Your eyes are tired. Fix it.',
+  'Blink like you mean it.',
 ];
 const SHORTCUT_TOGGLE = 'CommandOrControl+Option+B';
 const SHORTCUT_INSTANT = 'CommandOrControl+Option+Shift+B';
 const SETTINGS_FILE_NAME = 'settings.json';
 const BREAK_WINDOW_WIDTH = 340;
-const BREAK_WINDOW_HEIGHT = 220;
+const BREAK_WINDOW_HEIGHT = 290;
 const INTERVAL_OPTIONS = [
   { label: '10 sec', value: 10 * 1000, devOnly: true },
   { label: '20 sec', value: 20 * 1000, devOnly: true },
@@ -129,6 +141,15 @@ function buildBreakHtml(bodyText, durationSeconds) {
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', sans-serif; }
+  @keyframes breakIn {
+    from { opacity: 0; transform: scale(0.94) translateY(6px); }
+    to   { opacity: 1; transform: scale(1) translateY(0); }
+  }
+  @keyframes pulse {
+    0%   { transform: scale(1);    opacity: 1; }
+    40%  { transform: scale(1.09); opacity: 0.85; }
+    100% { transform: scale(1);    opacity: 1; }
+  }
   body {
     background: rgba(18, 18, 20, 0.94);
     color: #f1f1f2;
@@ -136,22 +157,58 @@ function buildBreakHtml(bodyText, durationSeconds) {
     overflow: hidden;
     -webkit-user-select: none;
     -webkit-app-region: drag;
+    opacity: 0;
+    transform-origin: center;
+    animation: breakIn 280ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+    transition: opacity 220ms ease, transform 220ms ease;
   }
+  body.leaving { opacity: 0; transform: scale(0.97); }
   .wrap {
     height: 100%;
     display: flex; flex-direction: column;
     align-items: center; justify-content: center;
     padding: 20px 24px; text-align: center;
   }
-  .title { font-size: 13px; letter-spacing: 1.5px; text-transform: uppercase; color: rgba(255,255,255,0.5); margin-bottom: 10px; }
-  .body { font-size: 15px; line-height: 1.35; color: rgba(255,255,255,0.88); margin-bottom: 14px; max-width: 260px; }
-  .count { font-size: 72px; font-weight: 200; letter-spacing: -3px; font-variant-numeric: tabular-nums; }
+  .title { font-size: 12px; letter-spacing: 1.5px; text-transform: uppercase; color: rgba(255,255,255,0.5); margin-bottom: 8px; }
+  .body { font-size: 14px; line-height: 1.35; color: rgba(255,255,255,0.88); margin-bottom: 10px; max-width: 260px; }
+  .count {
+    font-size: 56px; font-weight: 200; letter-spacing: -2px;
+    font-variant-numeric: tabular-nums;
+    transform-origin: center;
+    line-height: 1;
+  }
+  .count.pulse { animation: pulse 320ms ease-out; }
+  .eye-wrap {
+    margin-bottom: 10px;
+    animation: float 3.2s ease-in-out infinite;
+  }
+  @keyframes float {
+    0%, 100% { transform: translateY(0); }
+    50%      { transform: translateY(-4px); }
+  }
+  @keyframes blink {
+    0%, 88%, 100%  { transform: scaleY(1); }
+    92%, 95%       { transform: scaleY(0.08); }
+  }
+  @keyframes lookAround {
+    0%, 100% { transform: translateX(0); }
+    25%      { transform: translateX(-4px); }
+    55%      { transform: translateX(3px); }
+    80%      { transform: translateX(0); }
+  }
+  .eye {
+    width: 92px; height: 54px;
+    transform-origin: 50% 50%;
+    animation: blink 3.8s infinite;
+  }
+  .pupil-group { animation: lookAround 5.5s ease-in-out infinite; transform-origin: 50% 50%; }
   .skip {
     -webkit-app-region: no-drag;
     position: absolute; top: 10px; right: 12px;
     background: transparent; border: none;
     color: rgba(255,255,255,0.45); font-size: 12px;
     cursor: pointer; padding: 6px 10px; border-radius: 6px;
+    transition: color 120ms ease, background 120ms ease;
   }
   .skip:hover { color: #fff; background: rgba(255,255,255,0.08); }
 </style>
@@ -159,21 +216,48 @@ function buildBreakHtml(bodyText, durationSeconds) {
 <body>
   <button class="skip" id="skip">Skip</button>
   <div class="wrap">
+    <div class="eye-wrap">
+      <svg class="eye" viewBox="0 0 100 60" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <clipPath id="eyeClip">
+            <path d="M4 30 Q 50 -2 96 30 Q 50 62 4 30 Z"/>
+          </clipPath>
+        </defs>
+        <path d="M4 30 Q 50 -2 96 30 Q 50 62 4 30 Z" fill="#f5f5f7"/>
+        <g clip-path="url(#eyeClip)" class="pupil-group">
+          <circle cx="50" cy="30" r="17" fill="#4aa3ff"/>
+          <circle cx="50" cy="30" r="9" fill="#121218"/>
+          <circle cx="54.5" cy="25" r="3" fill="#ffffff" opacity="0.95"/>
+          <circle cx="46" cy="33" r="1.4" fill="#ffffff" opacity="0.6"/>
+        </g>
+      </svg>
+    </div>
     <div class="title">Break time</div>
     <div class="body">${safeBody}</div>
     <div class="count" id="count">${durationSeconds}</div>
   </div>
   <script>
+    const CLOSE_DELAY = 220;
     let seconds = ${durationSeconds};
     const el = document.getElementById('count');
+
+    function closeWithFade() {
+      document.body.classList.add('leaving');
+      setTimeout(() => window.close(), CLOSE_DELAY);
+    }
+
     const tick = setInterval(() => {
       seconds -= 1;
       el.textContent = String(seconds);
-      if (seconds <= 0) { clearInterval(tick); window.close(); }
+      el.classList.remove('pulse');
+      void el.offsetWidth;
+      el.classList.add('pulse');
+      if (seconds <= 0) { clearInterval(tick); closeWithFade(); }
     }, 1000);
+
     document.getElementById('skip').addEventListener('click', () => {
       clearInterval(tick);
-      window.close();
+      closeWithFade();
     });
   </script>
 </body>
