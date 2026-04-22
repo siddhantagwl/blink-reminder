@@ -1,4 +1,4 @@
-import { app, Menu, Notification, Tray, globalShortcut, nativeImage } from 'electron';
+import { app, BrowserWindow, Menu, Tray, globalShortcut, nativeImage } from 'electron';
 import path from 'node:path';
 import fs from 'node:fs';
 import started from 'electron-squirrel-startup';
@@ -11,7 +11,6 @@ const IS_DEV = !app.isPackaged;
 const DEFAULT_INTERVAL_MS = 20 * 60 * 1000;
 const DEV_DEFAULT_INTERVAL_MS = 10 * 1000;
 const AUTO_START_REMINDERS = false;
-const NOTIFICATION_TITLE = 'Blink reminder';
 const NOTIFICATION_BODIES = [
   'Blink 10 times and look away for 20 seconds.',
   'Look at something 20 feet away for 20 seconds.',
@@ -25,6 +24,9 @@ const NOTIFICATION_BODIES = [
 const SHORTCUT_TOGGLE = 'CommandOrControl+Option+B';
 const SHORTCUT_INSTANT = 'CommandOrControl+Option+Shift+B';
 const SETTINGS_FILE_NAME = 'settings.json';
+const BREAK_DURATION_SECONDS = 20;
+const BREAK_WINDOW_WIDTH = 340;
+const BREAK_WINDOW_HEIGHT = 220;
 const INTERVAL_OPTIONS = [
   { label: '10 sec', value: 10 * 1000, devOnly: true },
   { label: '20 sec', value: 20 * 1000, devOnly: true },
@@ -41,6 +43,7 @@ let settingsPath = '';
 let iconRunning = null;
 let iconPaused = null;
 let lastNotificationBodyIndex = -1;
+let breakWindow = null;
 
 function loadTrayIcons() {
   const running = nativeImage.createFromPath(path.join(__dirname, 'iconTemplate.png'));
@@ -103,11 +106,98 @@ function pickNextNotificationBody() {
   return NOTIFICATION_BODIES[index];
 }
 
-function showBlinkNotification() {
-  new Notification({
-    title: NOTIFICATION_TITLE,
-    body: pickNextNotificationBody(),
-  }).show();
+function buildBreakHtml(bodyText, durationSeconds) {
+  const safeBody = String(bodyText).replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return `<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', sans-serif; }
+  body {
+    background: rgba(18, 18, 20, 0.94);
+    color: #f1f1f2;
+    border-radius: 14px;
+    overflow: hidden;
+    -webkit-user-select: none;
+    -webkit-app-region: drag;
+  }
+  .wrap {
+    height: 100%;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    padding: 20px 24px; text-align: center;
+  }
+  .title { font-size: 13px; letter-spacing: 1.5px; text-transform: uppercase; color: rgba(255,255,255,0.5); margin-bottom: 10px; }
+  .body { font-size: 15px; line-height: 1.35; color: rgba(255,255,255,0.88); margin-bottom: 14px; max-width: 260px; }
+  .count { font-size: 72px; font-weight: 200; letter-spacing: -3px; font-variant-numeric: tabular-nums; }
+  .skip {
+    -webkit-app-region: no-drag;
+    position: absolute; top: 10px; right: 12px;
+    background: transparent; border: none;
+    color: rgba(255,255,255,0.45); font-size: 12px;
+    cursor: pointer; padding: 6px 10px; border-radius: 6px;
+  }
+  .skip:hover { color: #fff; background: rgba(255,255,255,0.08); }
+</style>
+</head>
+<body>
+  <button class="skip" id="skip">Skip</button>
+  <div class="wrap">
+    <div class="title">Break time</div>
+    <div class="body">${safeBody}</div>
+    <div class="count" id="count">${durationSeconds}</div>
+  </div>
+  <script>
+    let seconds = ${durationSeconds};
+    const el = document.getElementById('count');
+    const tick = setInterval(() => {
+      seconds -= 1;
+      el.textContent = String(seconds);
+      if (seconds <= 0) { clearInterval(tick); window.close(); }
+    }, 1000);
+    document.getElementById('skip').addEventListener('click', () => {
+      clearInterval(tick);
+      window.close();
+    });
+  </script>
+</body>
+</html>`;
+}
+
+function showBreak() {
+  if (breakWindow && !breakWindow.isDestroyed()) return;
+
+  const bodyText = pickNextNotificationBody();
+  breakWindow = new BrowserWindow({
+    width: BREAK_WINDOW_WIDTH,
+    height: BREAK_WINDOW_HEIGHT,
+    frame: false,
+    transparent: true,
+    alwaysOnTop: true,
+    resizable: false,
+    minimizable: false,
+    maximizable: false,
+    skipTaskbar: true,
+    hasShadow: true,
+    show: false,
+    webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
+  });
+
+  breakWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  breakWindow.setAlwaysOnTop(true, 'screen-saver');
+
+  breakWindow.once('ready-to-show', () => {
+    breakWindow?.showInactive();
+  });
+
+  breakWindow.on('closed', () => {
+    breakWindow = null;
+  });
+
+  const html = buildBreakHtml(bodyText, BREAK_DURATION_SECONDS);
+  breakWindow.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
 }
 
 function isReminderRunning() {
@@ -133,7 +223,7 @@ function restartRemindersIfRunning() {
 
   clearInterval(reminderInterval);
   reminderInterval = setInterval(() => {
-    showBlinkNotification();
+    showBreak();
   }, currentIntervalMs);
 
   updateTrayVisualState();
@@ -203,9 +293,9 @@ function rebuildTrayMenu() {
       type: 'separator',
     },
     {
-      label: 'Show test notification',
+      label: 'Show test break',
       accelerator: SHORTCUT_INSTANT,
-      click: () => showBlinkNotification(),
+      click: () => showBreak(),
     },
     {
       type: 'separator',
@@ -228,7 +318,7 @@ function startReminders() {
   }
 
   reminderInterval = setInterval(() => {
-    showBlinkNotification();
+    showBreak();
   }, currentIntervalMs);
 
   updateTrayVisualState();
@@ -268,7 +358,7 @@ function registerGlobalShortcuts() {
   const toggleOk = globalShortcut.register(SHORTCUT_TOGGLE, toggleReminders);
   if (!toggleOk) console.error(`Failed to register shortcut: ${SHORTCUT_TOGGLE}`);
 
-  const instantOk = globalShortcut.register(SHORTCUT_INSTANT, showBlinkNotification);
+  const instantOk = globalShortcut.register(SHORTCUT_INSTANT, showBreak);
   if (!instantOk) console.error(`Failed to register shortcut: ${SHORTCUT_INSTANT}`);
 }
 
