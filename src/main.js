@@ -44,6 +44,7 @@ const BREAK_WINDOW_WIDTH = 340;
 const BREAK_WINDOW_HEIGHT = 290;
 const DIM_OPACITY = 0.55;
 const DIM_FADE_MS = 280;
+const BREAK_SOUND_PATH = '/System/Library/Sounds/Glass.aiff';
 const INTERVAL_OPTIONS = [
   { label: '10 sec', value: 10 * 1000, devOnly: true },
   { label: '20 sec', value: 20 * 1000, devOnly: true },
@@ -335,9 +336,17 @@ function closeDimOverlays() {
   }
 }
 
+function playBreakSound() {
+  if (process.platform !== 'darwin') return;
+  execFile('afplay', [BREAK_SOUND_PATH], (err) => {
+    if (err) console.error('Failed to play break sound:', err.message);
+  });
+}
+
 function showBreak() {
   if (breakWindow && !breakWindow.isDestroyed()) return;
 
+  playBreakSound();
   openDimOverlays();
   const bodyText = pickNextNotificationBody();
   breakWindow = new BrowserWindow({
