@@ -1,11 +1,26 @@
 const { FusesPlugin } = require('@electron-forge/plugin-fuses');
 const { FuseV1Options, FuseVersion } = require('@electron/fuses');
+const { execFileSync } = require('node:child_process');
+const path = require('node:path');
+const fs = require('node:fs');
 
 module.exports = {
   packagerConfig: {
     asar: true,
+    appBundleId: 'com.siddhant.blink-reminder',
   },
   rebuildConfig: {},
+  hooks: {
+    postPackage: async (_forgeConfig, options) => {
+      if (options.platform !== 'darwin') return;
+      for (const outputPath of options.outputPaths) {
+        const appPath = fs.readdirSync(outputPath).find((entry) => entry.endsWith('.app'));
+        if (!appPath) continue;
+        const fullAppPath = path.join(outputPath, appPath);
+        execFileSync('codesign', ['--deep', '--force', '--sign', '-', fullAppPath], { stdio: 'inherit' });
+      }
+    },
+  },
   makers: [
     {
       name: '@electron-forge/maker-squirrel',

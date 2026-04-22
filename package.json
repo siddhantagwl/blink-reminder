@@ -1,8 +1,8 @@
 {
   "name": "blink-reminder",
-  "productName": "blink-reminder",
+  "productName": "Blink Reminder",
   "version": "1.0.0",
-  "description": "My Electron application description",
+  "description": "Tray app that reminds you to blink and look away from your screen.",
   "main": ".vite/build/main.js",
   "private": true,
   "scripts": {

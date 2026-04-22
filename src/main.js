@@ -1,4 +1,4 @@
-import { app, Menu, Notification, Tray, nativeImage } from 'electron';
+import { app, Menu, Notification, Tray, globalShortcut, nativeImage } from 'electron';
 import path from 'node:path';
 import fs from 'node:fs';
 import started from 'electron-squirrel-startup';
@@ -11,9 +11,19 @@ const IS_DEV = !app.isPackaged;
 const DEFAULT_INTERVAL_MS = 20 * 60 * 1000;
 const DEV_DEFAULT_INTERVAL_MS = 10 * 1000;
 const AUTO_START_REMINDERS = false;
-const DEFAULT_LAUNCH_AT_LOGIN = false;
 const NOTIFICATION_TITLE = 'Blink reminder';
-const NOTIFICATION_BODY = 'Blink 10 times and look away for 20 seconds.';
+const NOTIFICATION_BODIES = [
+  'Blink 10 times and look away for 20 seconds.',
+  'Look at something 20 feet away for 20 seconds.',
+  'Give your eyes a rest — blink and refocus.',
+  'Soft blinks. Let your eyes reset.',
+  'Unlock your jaw, drop your shoulders, and blink.',
+  'Look far, then near. Your eyes need the workout.',
+  'Close your eyes for a moment. Breathe.',
+  'Blink slowly a few times. Notice anything dry?',
+];
+const SHORTCUT_TOGGLE = 'CommandOrControl+Option+B';
+const SHORTCUT_INSTANT = 'CommandOrControl+Option+Shift+B';
 const SETTINGS_FILE_NAME = 'settings.json';
 const INTERVAL_OPTIONS = [
   { label: '10 sec', value: 10 * 1000, devOnly: true },
@@ -27,23 +37,20 @@ let tray = null;
 let reminderInterval = null;
 let trayMenu = null;
 let currentIntervalMs = IS_DEV ? DEV_DEFAULT_INTERVAL_MS : DEFAULT_INTERVAL_MS;
-let launchAtLogin = DEFAULT_LAUNCH_AT_LOGIN;
 let settingsPath = '';
-let usingFallbackTrayIcon = false;
+let iconRunning = null;
+let iconPaused = null;
+let lastNotificationBodyIndex = -1;
 
-function createFallbackTrayIcon() {
-  const svg = `
-    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 18 18">
-      <g fill="none" stroke="black" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M2 9c1.8-2.8 4.3-4.2 7-4.2s5.2 1.4 7 4.2c-1.8 2.8-4.3 4.2-7 4.2S3.8 11.8 2 9Z"/>
-        <circle cx="9" cy="9" r="2.1" fill="black" stroke="none"/>
-      </g>
-    </svg>
-  `.trim();
-
-  const icon = nativeImage.createFromDataURL(`data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`);
-  icon.setTemplateImage(true);
-  return icon.resize({ width: 18, height: 18 });
+function loadTrayIcons() {
+  const running = nativeImage.createFromPath(path.join(__dirname, 'iconTemplate.png'));
+  const paused = nativeImage.createFromPath(path.join(__dirname, 'iconTemplatePaused.png'));
+  if (process.platform === 'darwin') {
+    running.setTemplateImage(true);
+    paused.setTemplateImage(true);
+  }
+  iconRunning = running;
+  iconPaused = paused;
 }
 
 function getVisibleIntervalOptions() {
@@ -67,10 +74,6 @@ function loadSettings() {
     if (typeof parsed.currentIntervalMs === 'number') {
       currentIntervalMs = parsed.currentIntervalMs;
     }
-
-    if (typeof parsed.launchAtLogin === 'boolean') {
-      launchAtLogin = parsed.launchAtLogin;
-    }
   } catch (error) {
     if (error?.code !== 'ENOENT') {
       console.error('Failed to load settings:', error);
@@ -82,14 +85,7 @@ function saveSettings() {
   try {
     fs.writeFileSync(
       settingsPath,
-      JSON.stringify(
-        {
-          currentIntervalMs,
-          launchAtLogin,
-        },
-        null,
-        2,
-      ),
+      JSON.stringify({ currentIntervalMs }, null, 2),
       'utf8',
     );
   } catch (error) {
@@ -97,28 +93,20 @@ function saveSettings() {
   }
 }
 
-function applyLaunchAtLoginSetting() {
-  if (process.platform !== 'darwin') {
-    return;
-  }
-
-  if (!app.isPackaged) {
-    return;
-  }
-
-  try {
-    app.setLoginItemSettings({
-      openAtLogin: launchAtLogin,
-    });
-  } catch (error) {
-    console.error('Failed to apply launch at login setting:', error);
-  }
+function pickNextNotificationBody() {
+  if (NOTIFICATION_BODIES.length === 1) return NOTIFICATION_BODIES[0];
+  let index;
+  do {
+    index = Math.floor(Math.random() * NOTIFICATION_BODIES.length);
+  } while (index === lastNotificationBodyIndex);
+  lastNotificationBodyIndex = index;
+  return NOTIFICATION_BODIES[index];
 }
 
 function showBlinkNotification() {
   new Notification({
     title: NOTIFICATION_TITLE,
-    body: NOTIFICATION_BODY,
+    body: pickNextNotificationBody(),
   }).show();
 }
 
@@ -133,10 +121,7 @@ function updateTrayVisualState() {
 
   const isRunning = isReminderRunning();
   tray.setToolTip(`Blink Reminder: ${isRunning ? 'running' : 'paused'} (${getIntervalLabel(currentIntervalMs)})`);
-
-  if (process.platform === 'darwin') {
-    tray.setTitle(usingFallbackTrayIcon ? (isRunning ? '👁 On' : '👁') : '');
-  }
+  tray.setImage(isRunning ? iconRunning : iconPaused);
 }
 
 function restartRemindersIfRunning() {
@@ -161,11 +146,12 @@ function setIntervalMs(nextIntervalMs) {
   restartRemindersIfRunning();
 }
 
-function setLaunchAtLogin(nextValue) {
-  launchAtLogin = nextValue;
-  saveSettings();
-  applyLaunchAtLoginSetting();
-  rebuildTrayMenu();
+function toggleReminders() {
+  if (isReminderRunning()) {
+    stopReminders();
+  } else {
+    startReminders();
+  }
 }
 
 function buildIntervalMenuItems() {
@@ -196,11 +182,13 @@ function rebuildTrayMenu() {
     },
     {
       label: 'Start reminders',
+      accelerator: SHORTCUT_TOGGLE,
       enabled: !isReminderRunning(),
       click: () => startReminders(),
     },
     {
       label: 'Stop reminders',
+      accelerator: SHORTCUT_TOGGLE,
       enabled: isReminderRunning(),
       click: () => stopReminders(),
     },
@@ -216,17 +204,8 @@ function rebuildTrayMenu() {
     },
     {
       label: 'Show test notification',
+      accelerator: SHORTCUT_INSTANT,
       click: () => showBlinkNotification(),
-    },
-    {
-      type: 'separator',
-    },
-    {
-      label: app.isPackaged ? 'Launch at login' : 'Launch at login (available after packaging)',
-      type: 'checkbox',
-      checked: launchAtLogin,
-      enabled: app.isPackaged,
-      click: (menuItem) => setLaunchAtLogin(menuItem.checked),
     },
     {
       type: 'separator',
@@ -268,16 +247,8 @@ function stopReminders() {
 }
 
 function createTray() {
-  const iconPath = path.join(__dirname, 'iconTemplate.png');
-  const hasIconFile = fs.existsSync(iconPath);
-  usingFallbackTrayIcon = !hasIconFile;
-  const trayIcon = hasIconFile ? nativeImage.createFromPath(iconPath) : createFallbackTrayIcon();
-
-  if (process.platform === 'darwin') {
-    trayIcon.setTemplateImage(true);
-  }
-
-  tray = new Tray(trayIcon);
+  loadTrayIcons();
+  tray = new Tray(iconPaused);
   tray.setIgnoreDoubleClickEvents(true);
   updateTrayVisualState();
   rebuildTrayMenu();
@@ -293,16 +264,24 @@ function createTray() {
   });
 }
 
+function registerGlobalShortcuts() {
+  const toggleOk = globalShortcut.register(SHORTCUT_TOGGLE, toggleReminders);
+  if (!toggleOk) console.error(`Failed to register shortcut: ${SHORTCUT_TOGGLE}`);
+
+  const instantOk = globalShortcut.register(SHORTCUT_INSTANT, showBlinkNotification);
+  if (!instantOk) console.error(`Failed to register shortcut: ${SHORTCUT_INSTANT}`);
+}
+
 app.whenReady().then(() => {
   settingsPath = getSettingsPath();
   loadSettings();
-  applyLaunchAtLoginSetting();
 
   if (process.platform === 'darwin') {
     app.dock.hide();
   }
 
   createTray();
+  registerGlobalShortcuts();
 
   if (AUTO_START_REMINDERS) {
     startReminders();
@@ -313,6 +292,10 @@ app.whenReady().then(() => {
       createTray();
     }
   });
+});
+
+app.on('will-quit', () => {
+  globalShortcut.unregisterAll();
 });
 
 app.on('window-all-closed', (event) => {
