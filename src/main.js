@@ -1,6 +1,7 @@
 import { app, BrowserWindow, Menu, Tray, globalShortcut, nativeImage } from 'electron';
 import path from 'node:path';
 import fs from 'node:fs';
+import { execFile } from 'node:child_process';
 import started from 'electron-squirrel-startup';
 
 if (started) {
@@ -10,6 +11,9 @@ if (started) {
 const IS_DEV = !app.isPackaged;
 const DEFAULT_INTERVAL_MS = 20 * 60 * 1000;
 const DEV_DEFAULT_INTERVAL_MS = 10 * 1000;
+const MIN_INTERVAL_MS = 5 * 1000;
+const MAX_INTERVAL_MINUTES = 120;
+const DEFAULT_BREAK_DURATION_SECONDS = 20;
 const AUTO_START_REMINDERS = false;
 const NOTIFICATION_BODIES = [
   'Blink 10 times and look away for 20 seconds.',
@@ -24,21 +28,23 @@ const NOTIFICATION_BODIES = [
 const SHORTCUT_TOGGLE = 'CommandOrControl+Option+B';
 const SHORTCUT_INSTANT = 'CommandOrControl+Option+Shift+B';
 const SETTINGS_FILE_NAME = 'settings.json';
-const BREAK_DURATION_SECONDS = 20;
 const BREAK_WINDOW_WIDTH = 340;
 const BREAK_WINDOW_HEIGHT = 220;
 const INTERVAL_OPTIONS = [
   { label: '10 sec', value: 10 * 1000, devOnly: true },
   { label: '20 sec', value: 20 * 1000, devOnly: true },
-  { label: '5 min', value: 5 * 60 * 1000 },
-  { label: '10 min', value: 10 * 60 * 1000 },
-  { label: '20 min', value: 20 * 60 * 1000 },
+];
+const BREAK_DURATION_OPTIONS = [
+  { label: '20 sec', value: 20 },
+  { label: '30 sec', value: 30 },
+  { label: '60 sec', value: 60 },
 ];
 
 let tray = null;
 let reminderInterval = null;
 let trayMenu = null;
 let currentIntervalMs = IS_DEV ? DEV_DEFAULT_INTERVAL_MS : DEFAULT_INTERVAL_MS;
+let currentBreakDurationSeconds = DEFAULT_BREAK_DURATION_SECONDS;
 let settingsPath = '';
 let iconRunning = null;
 let iconPaused = null;
@@ -62,7 +68,12 @@ function getVisibleIntervalOptions() {
 
 function getIntervalLabel(intervalMs) {
   const matchedOption = INTERVAL_OPTIONS.find((option) => option.value === intervalMs);
-  return matchedOption ? matchedOption.label : `${Math.round(intervalMs / 1000)} sec`;
+  if (matchedOption) return matchedOption.label;
+  const totalSeconds = Math.round(intervalMs / 1000);
+  if (totalSeconds < 60) return `${totalSeconds} sec`;
+  const minutes = intervalMs / 60000;
+  const rounded = Number.isInteger(minutes) ? minutes : Math.round(minutes * 10) / 10;
+  return `${rounded} min`;
 }
 
 function getSettingsPath() {
@@ -77,6 +88,9 @@ function loadSettings() {
     if (typeof parsed.currentIntervalMs === 'number') {
       currentIntervalMs = parsed.currentIntervalMs;
     }
+    if (typeof parsed.currentBreakDurationSeconds === 'number') {
+      currentBreakDurationSeconds = parsed.currentBreakDurationSeconds;
+    }
   } catch (error) {
     if (error?.code !== 'ENOENT') {
       console.error('Failed to load settings:', error);
@@ -88,7 +102,7 @@ function saveSettings() {
   try {
     fs.writeFileSync(
       settingsPath,
-      JSON.stringify({ currentIntervalMs }, null, 2),
+      JSON.stringify({ currentIntervalMs, currentBreakDurationSeconds }, null, 2),
       'utf8',
     );
   } catch (error) {
@@ -196,7 +210,7 @@ function showBreak() {
     breakWindow = null;
   });
 
-  const html = buildBreakHtml(bodyText, BREAK_DURATION_SECONDS);
+  const html = buildBreakHtml(bodyText, currentBreakDurationSeconds);
   breakWindow.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
 }
 
@@ -236,6 +250,27 @@ function setIntervalMs(nextIntervalMs) {
   restartRemindersIfRunning();
 }
 
+function setBreakDurationSeconds(seconds) {
+  currentBreakDurationSeconds = seconds;
+  saveSettings();
+  rebuildTrayMenu();
+}
+
+function promptCustomInterval() {
+  const currentMinutes = currentIntervalMs / 60000;
+  const defaultVal = currentMinutes >= 1 ? String(Math.round(currentMinutes * 10) / 10) : '5';
+  const script = `display dialog "Reminder interval (in minutes):" default answer "${defaultVal}" buttons {"Cancel", "Set"} default button "Set" with title "Blink Reminder"`;
+  execFile('osascript', ['-e', script], (err, stdout) => {
+    if (err) return;
+    const parts = stdout.split('text returned:');
+    if (parts.length < 2) return;
+    const value = parseFloat(parts[1].trim());
+    if (!Number.isFinite(value) || value <= 0 || value > MAX_INTERVAL_MINUTES) return;
+    const ms = Math.max(MIN_INTERVAL_MS, Math.round(value * 60 * 1000));
+    setIntervalMs(ms);
+  });
+}
+
 function toggleReminders() {
   if (isReminderRunning()) {
     stopReminders();
@@ -245,11 +280,28 @@ function toggleReminders() {
 }
 
 function buildIntervalMenuItems() {
-  return getVisibleIntervalOptions().map((option) => ({
+  const presets = getVisibleIntervalOptions().map((option) => ({
     label: option.label,
     type: 'radio',
     checked: currentIntervalMs === option.value,
     click: () => setIntervalMs(option.value),
+  }));
+  const customMatchesPreset = INTERVAL_OPTIONS.some((o) => o.value === currentIntervalMs);
+  const customItem = {
+    label: customMatchesPreset ? 'Custom...' : `Custom (${getIntervalLabel(currentIntervalMs)})...`,
+    type: 'radio',
+    checked: !customMatchesPreset,
+    click: () => promptCustomInterval(),
+  };
+  return presets.length > 0 ? [...presets, { type: 'separator' }, customItem] : [customItem];
+}
+
+function buildBreakDurationMenuItems() {
+  return BREAK_DURATION_OPTIONS.map((option) => ({
+    label: option.label,
+    type: 'radio',
+    checked: currentBreakDurationSeconds === option.value,
+    click: () => setBreakDurationSeconds(option.value),
   }));
 }
 
@@ -264,7 +316,7 @@ function rebuildTrayMenu() {
       enabled: false,
     },
     {
-      label: `Current interval: ${getIntervalLabel(currentIntervalMs)}`,
+      label: `Interval: ${getIntervalLabel(currentIntervalMs)} · Break: ${currentBreakDurationSeconds}s`,
       enabled: false,
     },
     {
@@ -286,8 +338,12 @@ function rebuildTrayMenu() {
       type: 'separator',
     },
     {
-      label: 'Set interval',
+      label: 'Reminder interval',
       submenu: buildIntervalMenuItems(),
+    },
+    {
+      label: 'Break duration',
+      submenu: buildBreakDurationMenuItems(),
     },
     {
       type: 'separator',
