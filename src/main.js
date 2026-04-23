@@ -75,7 +75,7 @@ let settingsPath = '';
 let iconRunning = null;
 let iconPaused = null;
 let lastNotificationBodyIndex = -1;
-let breakWindow = null;
+let breakWindows = [];
 let dimOverlays = [];
 let snoozeTimeoutId = null;
 let snoozeUntil = null;
@@ -562,43 +562,63 @@ function playBreakSound() {
   });
 }
 
+function closeAllBreakWindows() {
+  const windows = breakWindows;
+  breakWindows = [];
+  for (const w of windows) {
+    if (!w.isDestroyed()) w.close();
+  }
+  closeDimOverlays();
+}
+
 function showBreak() {
-  if (breakWindow && !breakWindow.isDestroyed()) return;
+  if (breakWindows.length > 0) return;
 
   playBreakSound();
   openDimOverlays();
   const bodyText = pickNextNotificationBody();
-  breakWindow = new BrowserWindow({
-    width: BREAK_WINDOW_WIDTH,
-    height: BREAK_WINDOW_HEIGHT,
-    frame: false,
-    transparent: true,
-    alwaysOnTop: true,
-    resizable: false,
-    minimizable: false,
-    maximizable: false,
-    skipTaskbar: true,
-    hasShadow: true,
-    show: false,
-    webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
-  });
-
-  breakWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
-  breakWindow.setAlwaysOnTop(true, 'screen-saver');
-
-  breakWindow.once('ready-to-show', () => {
-    breakWindow?.showInactive();
-    breakWindow?.moveTop();
-  });
-
-  breakWindow.on('closed', () => {
-    breakWindow = null;
-    closeDimOverlays();
-  });
-
   const builder = currentTheme === 'hud' ? buildHudBreakHtml : buildMinimalBreakHtml;
-  const html = builder(bodyText, currentBreakDurationSeconds);
-  breakWindow.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
+  const html = 'data:text/html;charset=utf-8,' + encodeURIComponent(builder(bodyText, currentBreakDurationSeconds));
+
+  const displays = screen.getAllDisplays();
+  breakWindows = displays.map((display) => {
+    const wa = display.workArea;
+    const x = wa.x + Math.round((wa.width - BREAK_WINDOW_WIDTH) / 2);
+    const y = wa.y + Math.round((wa.height - BREAK_WINDOW_HEIGHT) / 2);
+
+    const w = new BrowserWindow({
+      x, y,
+      width: BREAK_WINDOW_WIDTH,
+      height: BREAK_WINDOW_HEIGHT,
+      frame: false,
+      transparent: true,
+      alwaysOnTop: true,
+      resizable: false,
+      minimizable: false,
+      maximizable: false,
+      skipTaskbar: true,
+      hasShadow: true,
+      show: false,
+      webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
+    });
+
+    w.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+    w.setAlwaysOnTop(true, 'screen-saver');
+
+    w.once('ready-to-show', () => {
+      if (!w.isDestroyed()) {
+        w.showInactive();
+        w.moveTop();
+      }
+    });
+
+    w.on('closed', () => {
+      if (breakWindows.includes(w)) closeAllBreakWindows();
+    });
+
+    w.loadURL(html);
+    return w;
+  });
 }
 
 function isReminderRunning() {
