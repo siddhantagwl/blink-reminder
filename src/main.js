@@ -59,6 +59,11 @@ const BREAK_DURATION_OPTIONS = [
   { label: '30 sec', value: 30 },
   { label: '60 sec', value: 60 },
 ];
+const SNOOZE_OPTIONS = [
+  { label: '15 minutes', value: 15 * 60 * 1000 },
+  { label: '30 minutes', value: 30 * 60 * 1000 },
+  { label: '1 hour',     value: 60 * 60 * 1000 },
+];
 
 let tray = null;
 let reminderInterval = null;
@@ -72,6 +77,8 @@ let iconPaused = null;
 let lastNotificationBodyIndex = -1;
 let breakWindow = null;
 let dimOverlays = [];
+let snoozeTimeoutId = null;
+let snoozeUntil = null;
 
 function loadTrayIcons() {
   const running = nativeImage.createFromPath(path.join(__dirname, 'iconTemplate.png'));
@@ -598,13 +605,58 @@ function isReminderRunning() {
   return reminderInterval !== null;
 }
 
+function isSnoozed() {
+  return snoozeTimeoutId !== null;
+}
+
+function formatSnoozeRemaining() {
+  if (!snoozeUntil) return '0 min';
+  const minutes = Math.max(1, Math.ceil((snoozeUntil - Date.now()) / 60000));
+  return minutes >= 60 ? `${Math.round(minutes / 60)} hr` : `${minutes} min`;
+}
+
+function snooze(ms) {
+  cancelSnoozeTimer();
+  if (isReminderRunning()) stopReminders();
+  snoozeUntil = Date.now() + ms;
+  snoozeTimeoutId = setTimeout(() => {
+    snoozeTimeoutId = null;
+    snoozeUntil = null;
+    startReminders();
+  }, ms);
+  updateTrayVisualState();
+  rebuildTrayMenu();
+}
+
+function cancelSnoozeTimer() {
+  if (snoozeTimeoutId) {
+    clearTimeout(snoozeTimeoutId);
+    snoozeTimeoutId = null;
+    snoozeUntil = null;
+  }
+}
+
+function cancelSnooze() {
+  cancelSnoozeTimer();
+  updateTrayVisualState();
+  rebuildTrayMenu();
+}
+
+function resumeFromSnooze() {
+  cancelSnoozeTimer();
+  startReminders();
+}
+
 function updateTrayVisualState() {
   if (!tray) {
     return;
   }
 
   const isRunning = isReminderRunning();
-  tray.setToolTip(`Blink Reminder: ${isRunning ? 'running' : 'paused'} (${getIntervalLabel(currentIntervalMs)})`);
+  const stateLabel = isSnoozed()
+    ? `snoozed (${formatSnoozeRemaining()} left)`
+    : isRunning ? 'running' : 'paused';
+  tray.setToolTip(`Blink Reminder: ${stateLabel} (${getIntervalLabel(currentIntervalMs)})`);
   tray.setImage(isRunning ? iconRunning : iconPaused);
 }
 
@@ -659,6 +711,10 @@ function promptCustomInterval() {
 }
 
 function toggleReminders() {
+  if (isSnoozed()) {
+    resumeFromSnooze();
+    return;
+  }
   if (isReminderRunning()) {
     stopReminders();
   } else {
@@ -699,6 +755,13 @@ function buildThemeMenuItems() {
   ];
 }
 
+function buildSnoozeMenuItems() {
+  return SNOOZE_OPTIONS.map((option) => ({
+    label: option.label,
+    click: () => snooze(option.value),
+  }));
+}
+
 function rebuildTrayMenu() {
   if (!tray) {
     return;
@@ -706,7 +769,9 @@ function rebuildTrayMenu() {
 
   trayMenu = Menu.buildFromTemplate([
     {
-      label: isReminderRunning() ? 'Reminders running' : 'Reminders paused',
+      label: isSnoozed()
+        ? `Snoozed (${formatSnoozeRemaining()} left)`
+        : isReminderRunning() ? 'Reminders running' : 'Reminders paused',
       enabled: false,
     },
     {
@@ -717,16 +782,26 @@ function rebuildTrayMenu() {
       type: 'separator',
     },
     {
-      label: 'Start reminders',
+      label: isSnoozed() ? 'Resume reminders now' : 'Start reminders',
       accelerator: SHORTCUT_TOGGLE,
-      enabled: !isReminderRunning(),
-      click: () => startReminders(),
+      visible: !isReminderRunning(),
+      click: () => (isSnoozed() ? resumeFromSnooze() : startReminders()),
     },
     {
       label: 'Stop reminders',
       accelerator: SHORTCUT_TOGGLE,
-      enabled: isReminderRunning(),
+      visible: isReminderRunning(),
       click: () => stopReminders(),
+    },
+    {
+      label: 'Snooze',
+      submenu: buildSnoozeMenuItems(),
+      visible: isReminderRunning(),
+    },
+    {
+      label: 'Cancel snooze',
+      visible: isSnoozed(),
+      click: () => cancelSnooze(),
     },
     {
       type: 'separator',
@@ -799,11 +874,13 @@ function createTray() {
 
   if (process.platform === 'darwin') {
     tray.on('click', () => {
+      rebuildTrayMenu();
       tray?.popUpContextMenu(trayMenu ?? undefined);
     });
   }
 
   tray.on('right-click', () => {
+    rebuildTrayMenu();
     tray?.popUpContextMenu(trayMenu ?? undefined);
   });
 }
