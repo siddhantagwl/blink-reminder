@@ -18,6 +18,9 @@ const DEFAULT_THEME = 'hud';
 const THEMES = ['minimal', 'hud'];
 const AUTO_START_REMINDERS = false;
 const NOTIFICATION_BODIES = [
+  'Look 20 feet away for 20 seconds. Classic 20-20-20.',
+  'Doctor-approved: 20 minutes, 20 feet, 20 seconds.',
+  'The 20-20-20 rule is calling. Answer it.',
   'Your eyeballs called. They\'re thirsty.',
   'Stop doomscrolling for 20 seconds.',
   'Plot twist: your monitor isn\'t your bestie.',
@@ -35,7 +38,6 @@ const NOTIFICATION_BODIES = [
   'Dry eyes? Fake blink five times. Then do real ones.',
   'The corner of the room hasn\'t seen you in hours.',
   'Close your eyes. Picture a beach. Back to work.',
-  'Look 20 feet away. Stay there 20 seconds.',
   'Your eyes are tired. Fix it.',
   'Blink like you mean it.',
 ];
@@ -247,7 +249,7 @@ function buildMinimalBreakHtml(bodyText, durationSeconds) {
         </g>
       </svg>
     </div>
-    <div class="title">Break time</div>
+    <div class="title">20 · 20 · 20</div>
     <div class="body">${safeBody}</div>
     <div class="count" id="count">${durationSeconds}</div>
   </div>
@@ -445,7 +447,7 @@ function buildHudBreakHtml(bodyText, durationSeconds) {
         </g>
       </svg>
     </div>
-    <div class="title">// Break · Eye Rest //</div>
+    <div class="title">// 20 · 20 · 20 //</div>
     <div class="body">${safeBody}</div>
     <div class="ring-wrap">
       <svg viewBox="0 0 100 100" width="100" height="100">
