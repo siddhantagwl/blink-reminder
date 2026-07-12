@@ -17,6 +17,9 @@ const DEFAULT_BREAK_DURATION_SECONDS = 20;
 const DEFAULT_THEME = 'hud';
 const THEMES = ['minimal', 'hud'];
 const AUTO_START_REMINDERS = false;
+const DEFAULT_SLEEP_START_HOUR = 23;
+const DEFAULT_SLEEP_END_HOUR = 9;
+const SLEEP_SCHEDULE_CHECK_INTERVAL_MS = 60 * 1000;
 const NOTIFICATION_BODIES = [
   'Look 20 feet away for 20 seconds. Classic 20-20-20.',
   'Doctor-approved: 20 minutes, 20 feet, 20 seconds.',
@@ -81,6 +84,10 @@ let breakWindows = [];
 let dimOverlays = [];
 let snoozeTimeoutId = null;
 let snoozeUntil = null;
+let sleepStartHour = DEFAULT_SLEEP_START_HOUR;
+let sleepEndHour = DEFAULT_SLEEP_END_HOUR;
+let sleepScheduleCheckInterval = null;
+let isInSleepMode = false;
 
 function loadTrayIcons() {
   const running = nativeImage.createFromPath(path.join(__dirname, 'iconTemplate.png'));
@@ -125,6 +132,12 @@ function loadSettings() {
     if (typeof parsed.currentTheme === 'string' && THEMES.includes(parsed.currentTheme)) {
       currentTheme = parsed.currentTheme;
     }
+    if (typeof parsed.sleepStartHour === 'number') {
+      sleepStartHour = parsed.sleepStartHour;
+    }
+    if (typeof parsed.sleepEndHour === 'number') {
+      sleepEndHour = parsed.sleepEndHour;
+    }
   } catch (error) {
     if (error?.code !== 'ENOENT') {
       console.error('Failed to load settings:', error);
@@ -136,7 +149,13 @@ function saveSettings() {
   try {
     fs.writeFileSync(
       settingsPath,
-      JSON.stringify({ currentIntervalMs, currentBreakDurationSeconds, currentTheme }, null, 2),
+      JSON.stringify({
+        currentIntervalMs,
+        currentBreakDurationSeconds,
+        currentTheme,
+        sleepStartHour,
+        sleepEndHour,
+      }, null, 2),
       'utf8',
     );
   } catch (error) {
@@ -717,6 +736,44 @@ function setTheme(theme) {
   rebuildTrayMenu();
 }
 
+function isCurrentlyInSleepHours() {
+  const now = new Date();
+  const currentHour = now.getHours();
+
+  if (sleepStartHour < sleepEndHour) {
+    return currentHour >= sleepStartHour && currentHour < sleepEndHour;
+  } else {
+    return currentHour >= sleepStartHour || currentHour < sleepEndHour;
+  }
+}
+
+function updateSleepMode() {
+  const shouldBeSleeping = isCurrentlyInSleepHours();
+  const now = new Date();
+  const currentHour = now.getHours();
+
+  if (IS_DEV) {
+    console.log(`[Sleep Check] Time: ${now.toLocaleTimeString()}, Hour: ${currentHour}, Range: ${sleepStartHour}-${sleepEndHour}, InSleep: ${shouldBeSleeping}`);
+  }
+
+  if (shouldBeSleeping && !isInSleepMode) {
+    isInSleepMode = true;
+    console.log(`[Sleep Mode] Entering sleep mode at ${now.toLocaleTimeString()}`);
+    if (isReminderRunning() && !isSnoozed()) {
+      stopReminders();
+    }
+  } else if (!shouldBeSleeping && isInSleepMode) {
+    isInSleepMode = false;
+    console.log(`[Sleep Mode] Exiting sleep mode at ${now.toLocaleTimeString()}`);
+    if (!isReminderRunning() && !isSnoozed()) {
+      startReminders();
+    }
+  }
+
+  updateTrayVisualState();
+  rebuildTrayMenu();
+}
+
 function promptCustomInterval() {
   const currentMinutes = currentIntervalMs / 60000;
   const defaultVal = currentMinutes >= 1 ? String(Math.round(currentMinutes * 10) / 10) : '5';
@@ -729,6 +786,46 @@ function promptCustomInterval() {
     if (!Number.isFinite(value) || value <= 0 || value > MAX_INTERVAL_MINUTES) return;
     const ms = Math.max(MIN_INTERVAL_MS, Math.round(value * 60 * 1000));
     setIntervalMs(ms);
+  });
+}
+
+function setSleepStartHour(hour) {
+  if (!Number.isInteger(hour) || hour < 0 || hour > 23) return;
+  sleepStartHour = hour;
+  saveSettings();
+  updateSleepMode();
+}
+
+function setSleepEndHour(hour) {
+  if (!Number.isInteger(hour) || hour < 0 || hour > 23) return;
+  sleepEndHour = hour;
+  saveSettings();
+  updateSleepMode();
+}
+
+function promptSleepStartTime() {
+  const defaultVal = String(sleepStartHour);
+  const script = `display dialog "Sleep start time (0-23 in 24-hour format):" default answer "${defaultVal}" buttons {"Cancel", "Set"} default button "Set" with title "Blink Reminder"`;
+  execFile('osascript', ['-e', script], (err, stdout) => {
+    if (err) return;
+    const parts = stdout.split('text returned:');
+    if (parts.length < 2) return;
+    const value = parseInt(parts[1].trim());
+    if (!Number.isInteger(value) || value < 0 || value > 23) return;
+    setSleepStartHour(value);
+  });
+}
+
+function promptSleepEndTime() {
+  const defaultVal = String(sleepEndHour);
+  const script = `display dialog "Sleep end time (0-23 in 24-hour format):" default answer "${defaultVal}" buttons {"Cancel", "Set"} default button "Set" with title "Blink Reminder"`;
+  execFile('osascript', ['-e', script], (err, stdout) => {
+    if (err) return;
+    const parts = stdout.split('text returned:');
+    if (parts.length < 2) return;
+    const value = parseInt(parts[1].trim());
+    if (!Number.isInteger(value) || value < 0 || value > 23) return;
+    setSleepEndHour(value);
   });
 }
 
@@ -777,6 +874,12 @@ function buildThemeMenuItems() {
   ];
 }
 
+function formatSleepHour(hour) {
+  const ampm = hour >= 12 ? 'PM' : 'AM';
+  const displayHour = hour === 0 ? 12 : hour > 12 ? hour - 12 : hour;
+  return `${displayHour}:00 ${ampm}`;
+}
+
 function buildSnoozeMenuItems() {
   return SNOOZE_OPTIONS.map((option) => ({
     label: option.label,
@@ -793,7 +896,7 @@ function rebuildTrayMenu() {
     {
       label: isSnoozed()
         ? `Snoozed (${formatSnoozeRemaining()} left)`
-        : isReminderRunning() ? 'Reminders running' : 'Reminders paused',
+        : isInSleepMode ? 'Sleep mode (auto-paused)' : isReminderRunning() ? 'Reminders running' : 'Reminders paused',
       enabled: false,
     },
     {
@@ -839,6 +942,19 @@ function rebuildTrayMenu() {
     {
       label: 'Popup theme',
       submenu: buildThemeMenuItems(),
+    },
+    {
+      label: 'Sleep schedule',
+      submenu: [
+        {
+          label: `Start: ${formatSleepHour(sleepStartHour)}`,
+          click: () => promptSleepStartTime(),
+        },
+        {
+          label: `End: ${formatSleepHour(sleepEndHour)}`,
+          click: () => promptSleepEndTime(),
+        },
+      ],
     },
     {
       type: 'separator',
@@ -915,6 +1031,21 @@ function registerGlobalShortcuts() {
   if (!instantOk) console.error(`Failed to register shortcut: ${SHORTCUT_INSTANT}`);
 }
 
+function startSleepScheduleChecker() {
+  if (sleepScheduleCheckInterval) return;
+  updateSleepMode();
+  sleepScheduleCheckInterval = setInterval(() => {
+    updateSleepMode();
+  }, SLEEP_SCHEDULE_CHECK_INTERVAL_MS);
+}
+
+function stopSleepScheduleChecker() {
+  if (sleepScheduleCheckInterval) {
+    clearInterval(sleepScheduleCheckInterval);
+    sleepScheduleCheckInterval = null;
+  }
+}
+
 app.whenReady().then(() => {
   settingsPath = getSettingsPath();
   loadSettings();
@@ -925,6 +1056,7 @@ app.whenReady().then(() => {
 
   createTray();
   registerGlobalShortcuts();
+  startSleepScheduleChecker();
 
   if (AUTO_START_REMINDERS) {
     startReminders();
@@ -939,6 +1071,7 @@ app.whenReady().then(() => {
 
 app.on('will-quit', () => {
   globalShortcut.unregisterAll();
+  stopSleepScheduleChecker();
 });
 
 app.on('window-all-closed', (event) => {
